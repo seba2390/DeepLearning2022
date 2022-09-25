@@ -61,7 +61,8 @@ def show_image_from_path(filepath: str) -> None:
 
 def show_image_from_idx(index: int,
                         dataset: MyCustomImageDataset,
-                        crop: bool = False):
+                        crop: bool = False,
+                        resize: bool = False):
     """
        Void type function that plots image nr. index from dataset
        using matplotlib.
@@ -72,9 +73,13 @@ def show_image_from_idx(index: int,
        - crop: boolean that determines whether to crop img. or not.
 
        """
-    img_tensor = dataset.__getitem__(idx=index)[0]
+    path = dataset.image_directory_path + "/" + dataset.img_titles[index]
+    img_tensor = torchvision.io.read_image(path, mode=torchvision.io.ImageReadMode.UNCHANGED)
     if crop:
         img_tensor = dataset.__crop__(image=img_tensor)
+    if resize:
+        transform = torchvision.transforms.Resize(dataset.img_dim)
+        img_tensor = transform(img_tensor)
     img_tensor = torchvision.transforms.functional.to_pil_image(img_tensor)
     plt.imshow(img_tensor)
     plt.show()

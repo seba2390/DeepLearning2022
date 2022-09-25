@@ -25,7 +25,7 @@ class MyCustomImageDataset(Dataset):
 
         self.image_directory_path = image_directory_path
         self.transform = transform
-        self.target_transform = target_transform
+        self.target_transform = target_transform  # Unused
         self.img_dim = (520, 520)
 
         self.X = torch.stack([self.__getitem__(i)[0] for i in range(len(self.img_labels))])
@@ -82,13 +82,14 @@ class MyCustomImageDataset(Dataset):
 
         """
         image = read_image(self.image_directory_path + "/" + self.img_titles[idx], mode=ImageReadMode.UNCHANGED)
-        image = self.__crop__(image)
         label = self.img_labels[idx]
         if self.transform is not None:
             image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
-        return image, label
+            return image, label
+
+        else:  # Defaulting to cropping.
+            image = self.__crop__(image)
+            return image, label
 
 
 class DataPrep:
