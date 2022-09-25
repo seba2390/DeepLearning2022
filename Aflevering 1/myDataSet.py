@@ -96,17 +96,27 @@ class DataPrep:
     def __init__(self, dataset: MyCustomImageDataset,
                  batch_size: int = 20,
                  data_fraction: float = 0.1,
-                 test_fraction: float = 0.2) -> None:
+                 test_fraction: float = 0.2,
+                 validation_fraction: float = 0.2) -> None:
         self.X, self.Y = dataset.X.to(torch.float32), list(dataset.Y)
         self.batch_size = batch_size
-        self.test_fraction = test_fraction
+
+        # Fraction of total available data to use
         self.data_fraction = data_fraction
+        # Fraction of data to be used for testing after training
+        self.test_fraction = test_fraction
+        # Fraction of remaining data to be used for validation during training
+        self.validation_fraction = validation_fraction
 
         self.label_dict = None
+
         self.train_X, self.train_Y = None, None
         self.test_X, self.test_Y = None, None
+        self.validation_X, self.validation_Y = None, None
 
-    def prepare(self):
+        self.__prepare()
+
+    def __prepare(self):
         # One-hot encoding labels
         self.Y = self.one_hot(self.Y)
 
@@ -122,12 +132,20 @@ class DataPrep:
         # Picking out portion size according to 'data_fraction'
         print("Initial nr. of batches: ", len(self.X))
         self.X, self.Y = self.X[:int(self.data_fraction * len(self.X))], self.Y[:int(self.data_fraction * len(self.Y))]
-        print("Final nr. of batches: ", len(self.X))
+        print("Nr. batches after 'data_fraction' splitting: ", len(self.X))
 
-        # Splitting into test and training set according to 'test_fraction'
-        self.test_X, self.test_Y = self.X[:int(self.test_fraction * len(self.X))], self.Y[:int(
+        # Picking out data for test set:
+        self.test_X, self.test_Y = self.X[:int(self.test_fraction * len(self.X))], self.Y[:int(self.test_fraction * len(self.Y))]
+        print("Nr. batches set aside for testing: ", len(self.test_X))
+        self.X, self.Y = self.X[int(self.test_fraction * len(self.X)):], self.Y[int(self.test_fraction * len(self.Y)):]
+
+        # Splitting into validation and training set according to 'validation_fraction'
+        self.validation_X, self.validation_Y = self.X[:int(self.test_fraction * len(self.X))], self.Y[:int(
             self.test_fraction * len(self.Y))]
-        self.train_X, self.train_Y = self.X[len(self.test_X):], self.Y[len(self.test_Y):]
+        print("Nr. batches set aside for validation: ", len(self.validation_X))
+        self.train_X, self.train_Y = self.X[len(self.validation_X):], self.Y[len(self.validation_Y):]
+        print("Nr. batches remaining for training: ", len(self.train_X))
+
 
     @staticmethod
     def batch_data(data: torch.Tensor,

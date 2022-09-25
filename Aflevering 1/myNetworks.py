@@ -131,7 +131,7 @@ class NeuralNet(torch.nn.Module):
             _row.to(self.device)
         assert forwarded_data.device.type == self.device.type, f'_prediction is on device: {forwarded_data.device.type}, but should be on: {self.device.type}'
         assert torch.all((forwarded_data == 0) | (
-                    forwarded_data == 1)), f'forwarded_data should be one-hot encoded (only 1 and 0), but is: {forwarded_data}.'
+                forwarded_data == 1)), f'forwarded_data should be one-hot encoded (only 1 and 0), but is: {forwarded_data}.'
         return forwarded_data
 
     def forward(self, data: torch.Tensor) -> torch.Tensor:
@@ -185,8 +185,8 @@ class NeuralNet(torch.nn.Module):
 
     def train_network(self, train_data_batches: list[torch.Tensor],
                       train_labels_batches: list[torch.Tensor],
-                      test_data_batches: list[torch.Tensor],
-                      test_labels_batches: list[torch.Tensor],
+                      validation_data_batches: list[torch.Tensor],
+                      validation_labels_batches: list[torch.Tensor],
                       epochs: int = 10,
                       device_name: str = "cuda") -> tuple[list[float], list[float], list[float], list[float]]:
 
@@ -198,15 +198,15 @@ class NeuralNet(torch.nn.Module):
          Parameters:
         - train_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
         - train_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - test_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - test_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
+        - validation_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
+        - validation_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
         - epochs: nr. of epochs (iteration) used to train.
 
          Returns:
         - _train_accuracies: list of floats w. avg. accuracies of training data at given epoch.
         - _train_losses: list of floats w. avg. loss of training data at given epoch.
-        - _test_accuracies: list of floats w. avg. accuracies of test data at given epoch.
-        - _test_losses: list of floats w. avg. loss of test data at given epoch.
+        - _validation_accuracies: list of floats w. avg. accuracies of validation data at given epoch.
+        - _validation_losses: list of floats w. avg. loss of validation data at given epoch.
 
         """
         self.device = torch.device('cpu')
@@ -218,7 +218,7 @@ class NeuralNet(torch.nn.Module):
                 self.train()
                 print("Current torch cuda version: ", torch.version.cuda)
                 print("Cuda devices found by torch: ", torch.cuda.device_count())
-                print("Current cuda device to be used by torch: ", torch.cuda.current_device())
+                print("Index of current cuda device to be used by torch: ", torch.cuda.current_device())
                 print("Name of cuda device: ", torch.cuda.get_device_name(0))
                 t = torch.cuda.get_device_properties(0).total_memory
                 print("Total memory in cuda device: ", t / 1e6, "MB")
@@ -231,9 +231,9 @@ class NeuralNet(torch.nn.Module):
                 for _batch in range(len(train_data_batches)):
                     train_data_batches[_batch] = train_data_batches[_batch].to(self.device)
                     train_labels_batches[_batch] = train_labels_batches[_batch].to(self.device)
-                for _batch in range(len(test_data_batches)):
-                    test_data_batches[_batch] = test_data_batches[_batch].to(self.device)
-                    test_labels_batches[_batch] = test_labels_batches[_batch].to(self.device)
+                for _batch in range(len(validation_data_batches)):
+                    validation_data_batches[_batch] = validation_data_batches[_batch].to(self.device)
+                    validation_labels_batches[_batch] = validation_labels_batches[_batch].to(self.device)
             else:
                 self.to(self.device)
                 self.train()
@@ -245,13 +245,60 @@ class NeuralNet(torch.nn.Module):
         _loss_function = torch.nn.CrossEntropyLoss()
 
         _train_accuracies, _train_losses = [], []
-        _test_accuracies, _test_losses = [], []
+        _validation_accuracies, _validation_losses = [], []
+        _best_validation_accuracy = 0.0
 
-        _best_test_accuracy = 0.0
+        # Saving initial loss and accuracy
+        # Training data
+        _counter = 0
+        _batch_train_acc, _batch_train_loss = 0.0, 0.0
+        for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
+            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
+            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(x_batch)
+                assert _y_hat.shape[0] == train_labels_batches[0].shape[0]
+                assert _y_hat.shape[1] == self.nr_classes
+                # Loss calculation
+                _loss = _loss_function(_y_hat, y_batch)
+                # Saving losses and accuracies
+                _y_hat = self.predict(_y_hat)
+                if self.device.type != 'cpu':
+                    _batch_train_acc += self.accuracy(_y_hat, y_batch).item()
+                else:
+                    _batch_train_acc += self.accuracy(_y_hat, y_batch)
+                _batch_train_loss += _loss.item()
+            _counter += 1
+        _train_accuracies.append(_batch_train_acc / _counter)
+        _train_losses.append(_batch_train_loss / _counter)
+
+        # Validation data
+        _counter = 0
+        _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
+        for _x_batch, _y_batch in zip(validation_data_batches, validation_labels_batches):
+            assert _x_batch.device.type == self.device.type, f'x_batch is on device: {_x_batch.device.type}, but should be on: {self.device.type}'
+            assert _y_batch.device.type == self.device.type, f'y_batch is on device: {_y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(_x_batch)
+                assert _y_hat.shape[0] == validation_labels_batches[0].shape[0]
+                assert _y_hat.shape[1] == self.nr_classes
+                # Loss calculation
+                _loss = _loss_function(_y_hat, _y_batch)
+                # Saving losses and accuracies
+                _y_hat = self.predict(_y_hat)
+                if self.device.type != 'cpu':
+                    _batch_validation_acc += self.accuracy(_y_hat, _y_batch).item()
+                else:
+                    _batch_validation_acc += self.accuracy(_y_hat, _y_batch)
+                _batch_train_loss += _loss.item()
+                _counter += 1
+        _validation_accuracies.append(_batch_validation_acc / _counter)
+        _validation_losses.append(_batch_validation_loss / _counter)
+
+        # Actual training
         for epoch in tqdm(range(epochs)):
-            _counter = 0
-            _batch_train_acc, _batch_train_loss = 0.0, 0.0
-            _batch_test_acc, _batch_test_loss = 0.0, 0.0
             # Training against training data
             for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
                 assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
@@ -266,43 +313,53 @@ class NeuralNet(torch.nn.Module):
                 _loss = _loss_function(_y_hat, y_batch)
                 _loss.backward()
                 _optimizer.step()
-                # Saving losses and accuracies
+
+            # Saving losses and accuracies
+            _counter = 0
+            _batch_train_acc, _batch_train_loss = 0.0, 0.0
+            for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
                 with torch.no_grad():
+                    _y_hat = self.forward(x_batch)
+                    _loss = _loss_function(_y_hat, y_batch)
                     if self.device.type != 'cpu':
                         _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch).item()
                     else:
                         _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch)
                     _batch_train_loss += _loss.item()
-                    _counter += 1
+                _counter += 1
             _train_accuracies.append(_batch_train_acc / _counter)
             _train_losses.append(_batch_train_loss / _counter)
-            # Testing model on test data
-            for x_batch, y_batch in zip(test_data_batches, test_labels_batches):
-                assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-                assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+
+            # Testing model on validation data
+            _counter = 0
+            _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
+            for _x_batch, _y_batch in zip(validation_data_batches, validation_labels_batches):
+                assert _x_batch.device.type == self.device.type, f'x_batch is on device: {_x_batch.device.type}, but should be on: {self.device.type}'
+                assert _y_batch.device.type == self.device.type, f'y_batch is on device: {_y_batch.device.type}, but should be on: {self.device.type}'
                 # Forward pass
-                _y_hat = self.forward(x_batch)
-                assert _y_hat.shape[0] == train_labels_batches[0].shape[0]
+                _y_hat = self.forward(_x_batch)
+                assert _y_hat.shape[0] == validation_labels_batches[0].shape[0]
                 assert _y_hat.shape[1] == self.nr_classes
                 # Loss calculation
-                _loss = _loss_function(_y_hat, y_batch)
+                _loss = _loss_function(_y_hat, _y_batch)
                 # Saving losses and accuracies
                 with torch.no_grad():
+                    _y_hat = self.predict(_y_hat)
                     if self.device.type != 'cpu':
-                        _batch_test_acc += self.accuracy(self.predict(_y_hat), y_batch).item()
+                        _batch_validation_acc += self.accuracy(_y_hat, _y_batch).item()
                     else:
-                        _batch_test_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                    _batch_test_loss += _loss.item()
+                        _batch_validation_acc += self.accuracy(_y_hat, _y_batch)
+                    _batch_train_loss += _loss.item()
+                _counter += 1
+            _validation_accuracies.append(_batch_validation_acc / _counter)
+            _validation_losses.append(_batch_validation_loss / _counter)
 
-            # Saving instance of model that yields the highest test acc during training
-            if _batch_test_acc / _counter > _best_test_accuracy:
-                _best_test_accuracy = _batch_test_acc / _counter
+            # Saving instance of model that yields the highest validation acc during training
+            if _batch_validation_acc / _counter > _best_validation_accuracy:
+                _best_validation_accuracy = _batch_validation_acc / _counter
                 torch.save(obj=self.state_dict(), f="Model/model.pt")
-                print("Model saved at epoch: ", epoch + 1, ", with test acc: ", _best_test_accuracy.item() * 100.0, "%")
-
-            # Saving current loss and current accuracy
-            _test_accuracies.append(_batch_test_acc / _counter)
-            _test_losses.append(_batch_test_loss / _counter)
+                print("Model saved at epoch: ", epoch + 1, ", with validation acc: ",
+                      _best_validation_accuracy * 100.0, "%")
 
         # Removing from GPU and Allocating input on CPU
         if self.device.type == "cuda":
@@ -311,10 +368,10 @@ class NeuralNet(torch.nn.Module):
             for _batch in range(len(train_data_batches)):
                 train_data_batches[_batch] = train_data_batches[_batch].to(self.device)
                 train_labels_batches[_batch] = train_labels_batches[_batch].to(self.device)
-            for _batch in range(len(test_data_batches)):
-                test_data_batches[_batch] = test_data_batches[_batch].to(self.device)
-                test_labels_batches[_batch] = test_labels_batches[_batch].to(self.device)
-        return _train_accuracies, _train_losses, _test_accuracies, _test_losses
+            for _batch in range(len(validation_data_batches)):
+                validation_data_batches[_batch] = validation_data_batches[_batch].to(self.device)
+                validation_labels_batches[_batch] = validation_labels_batches[_batch].to(self.device)
+        return _train_accuracies, _train_losses, _validation_accuracies, _validation_losses
 
 
 class NeuralNet2(torch.nn.Module):
@@ -465,7 +522,7 @@ class NeuralNet2(torch.nn.Module):
             _row.to(self.device)
         assert forwarded_data.device.type == self.device.type, f'_prediction is on device: {forwarded_data.device.type}, but should be on: {self.device.type}'
         assert torch.all((forwarded_data == 0) | (
-                    forwarded_data == 1)), f'forwarded_data should be one-hot encoded (only 1 and 0), but is: {forwarded_data}.'
+                forwarded_data == 1)), f'forwarded_data should be one-hot encoded (only 1 and 0), but is: {forwarded_data}.'
         return forwarded_data
 
     def forward(self, data: torch.Tensor) -> torch.Tensor:
@@ -538,8 +595,8 @@ class NeuralNet2(torch.nn.Module):
 
     def train_network(self, train_data_batches: list[torch.Tensor],
                       train_labels_batches: list[torch.Tensor],
-                      test_data_batches: list[torch.Tensor],
-                      test_labels_batches: list[torch.Tensor],
+                      validation_data_batches: list[torch.Tensor],
+                      validation_labels_batches: list[torch.Tensor],
                       epochs: int = 10,
                       device_name: str = "cuda") -> tuple[list[float], list[float], list[float], list[float]]:
 
@@ -551,15 +608,15 @@ class NeuralNet2(torch.nn.Module):
          Parameters:
         - train_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
         - train_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - test_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - test_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
+        - validation_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
+        - validation_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
         - epochs: nr. of epochs (iteration) used to train.
 
          Returns:
         - _train_accuracies: list of floats w. avg. accuracies of training data at given epoch.
         - _train_losses: list of floats w. avg. loss of training data at given epoch.
-        - _test_accuracies: list of floats w. avg. accuracies of test data at given epoch.
-        - _test_losses: list of floats w. avg. loss of test data at given epoch.
+        - _validation_accuracies: list of floats w. avg. accuracies of validation data at given epoch.
+        - _validation_losses: list of floats w. avg. loss of validation data at given epoch.
 
         """
         self.device = torch.device('cpu')
@@ -584,9 +641,9 @@ class NeuralNet2(torch.nn.Module):
                 for _batch in range(len(train_data_batches)):
                     train_data_batches[_batch] = train_data_batches[_batch].to(self.device)
                     train_labels_batches[_batch] = train_labels_batches[_batch].to(self.device)
-                for _batch in range(len(test_data_batches)):
-                    test_data_batches[_batch] = test_data_batches[_batch].to(self.device)
-                    test_labels_batches[_batch] = test_labels_batches[_batch].to(self.device)
+                for _batch in range(len(validation_data_batches)):
+                    validation_data_batches[_batch] = validation_data_batches[_batch].to(self.device)
+                    validation_labels_batches[_batch] = validation_labels_batches[_batch].to(self.device)
             else:
                 self.to(self.device)
                 self.train()
@@ -598,13 +655,60 @@ class NeuralNet2(torch.nn.Module):
         _loss_function = torch.nn.CrossEntropyLoss()
 
         _train_accuracies, _train_losses = [], []
-        _test_accuracies, _test_losses = [], []
+        _validation_accuracies, _validation_losses = [], []
+        _best_validation_accuracy = 0.0
 
-        _best_test_accuracy = 0.0
+        # Saving initial loss and accuracy
+        # Training data
+        _counter = 0
+        _batch_train_acc, _batch_train_loss = 0.0, 0.0
+        for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
+            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
+            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(x_batch)
+                assert _y_hat.shape[0] == train_labels_batches[0].shape[0]
+                assert _y_hat.shape[1] == self.nr_classes
+                # Loss calculation
+                _loss = _loss_function(_y_hat, y_batch)
+                # Saving losses and accuracies
+                _y_hat = self.predict(_y_hat)
+                if self.device.type != 'cpu':
+                    _batch_train_acc += self.accuracy(_y_hat, y_batch).item()
+                else:
+                    _batch_train_acc += self.accuracy(_y_hat, y_batch)
+                _batch_train_loss += _loss.item()
+            _counter += 1
+        _train_accuracies.append(_batch_train_acc / _counter)
+        _train_losses.append(_batch_train_loss / _counter)
+
+        # Validation data
+        _counter = 0
+        _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
+        for _x_batch, _y_batch in zip(validation_data_batches, validation_labels_batches):
+            assert _x_batch.device.type == self.device.type, f'x_batch is on device: {_x_batch.device.type}, but should be on: {self.device.type}'
+            assert _y_batch.device.type == self.device.type, f'y_batch is on device: {_y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(_x_batch)
+                assert _y_hat.shape[0] == validation_labels_batches[0].shape[0]
+                assert _y_hat.shape[1] == self.nr_classes
+                # Loss calculation
+                _loss = _loss_function(_y_hat, _y_batch)
+                # Saving losses and accuracies
+                _y_hat = self.predict(_y_hat)
+                if self.device.type != 'cpu':
+                    _batch_validation_acc += self.accuracy(_y_hat, _y_batch).item()
+                else:
+                    _batch_validation_acc += self.accuracy(_y_hat, _y_batch)
+                _batch_train_loss += _loss.item()
+                _counter += 1
+        _validation_accuracies.append(_batch_validation_acc / _counter)
+        _validation_losses.append(_batch_validation_loss / _counter)
+
+        # Actual training
         for epoch in tqdm(range(epochs)):
-            _counter = 0
-            _batch_train_acc, _batch_train_loss = 0.0, 0.0
-            _batch_test_acc, _batch_test_loss = 0.0, 0.0
             # Training against training data
             for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
                 assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
@@ -619,43 +723,53 @@ class NeuralNet2(torch.nn.Module):
                 _loss = _loss_function(_y_hat, y_batch)
                 _loss.backward()
                 _optimizer.step()
-                # Saving losses and accuracies
+
+            # Saving losses and accuracies
+            _counter = 0
+            _batch_train_acc, _batch_train_loss = 0.0, 0.0
+            for x_batch, y_batch in zip(train_data_batches, train_labels_batches):
                 with torch.no_grad():
+                    _y_hat = self.forward(x_batch)
+                    _loss = _loss_function(_y_hat, y_batch)
                     if self.device.type != 'cpu':
                         _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch).item()
                     else:
                         _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch)
                     _batch_train_loss += _loss.item()
-                    _counter += 1
+                _counter += 1
             _train_accuracies.append(_batch_train_acc / _counter)
             _train_losses.append(_batch_train_loss / _counter)
-            # Testing model on test data
-            for x_batch, y_batch in zip(test_data_batches, test_labels_batches):
-                assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-                assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+
+            # Testing model on validation data
+            _counter = 0
+            _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
+            for _x_batch, _y_batch in zip(validation_data_batches, validation_labels_batches):
+                assert _x_batch.device.type == self.device.type, f'x_batch is on device: {_x_batch.device.type}, but should be on: {self.device.type}'
+                assert _y_batch.device.type == self.device.type, f'y_batch is on device: {_y_batch.device.type}, but should be on: {self.device.type}'
                 # Forward pass
-                _y_hat = self.forward(x_batch)
-                assert _y_hat.shape[0] == train_labels_batches[0].shape[0]
+                _y_hat = self.forward(_x_batch)
+                assert _y_hat.shape[0] == validation_labels_batches[0].shape[0]
                 assert _y_hat.shape[1] == self.nr_classes
                 # Loss calculation
-                _loss = _loss_function(_y_hat, y_batch)
+                _loss = _loss_function(_y_hat, _y_batch)
                 # Saving losses and accuracies
                 with torch.no_grad():
+                    _y_hat = self.predict(_y_hat)
                     if self.device.type != 'cpu':
-                        _batch_test_acc += self.accuracy(self.predict(_y_hat), y_batch).item()
+                        _batch_validation_acc += self.accuracy(_y_hat, _y_batch).item()
                     else:
-                        _batch_test_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                    _batch_test_loss += _loss.item()
+                        _batch_validation_acc += self.accuracy(_y_hat, _y_batch)
+                    _batch_train_loss += _loss.item()
+                _counter += 1
+            _validation_accuracies.append(_batch_validation_acc / _counter)
+            _validation_losses.append(_batch_validation_loss / _counter)
 
-            # Saving instance of model that yields the highest test acc during training
-            if _batch_test_acc / _counter > _best_test_accuracy:
-                _best_test_accuracy = _batch_test_acc / _counter
+            # Saving instance of model that yields the highest validation acc during training
+            if _batch_validation_acc / _counter > _best_validation_accuracy:
+                _best_validation_accuracy = _batch_validation_acc / _counter
                 torch.save(obj=self.state_dict(), f="Model/model.pt")
-                print("Model saved at epoch: ", epoch + 1, ", with test acc: ", _best_test_accuracy.item() * 100.0, "%")
-
-            # Saving current loss and current accuracy
-            _test_accuracies.append(_batch_test_acc / _counter)
-            _test_losses.append(_batch_test_loss / _counter)
+                print("Model saved at epoch: ", epoch + 1, ", with validation acc: ",
+                      _best_validation_accuracy * 100.0, "%")
 
         # Removing from GPU and Allocating input on CPU
         if self.device.type == "cuda":
@@ -664,8 +778,7 @@ class NeuralNet2(torch.nn.Module):
             for _batch in range(len(train_data_batches)):
                 train_data_batches[_batch] = train_data_batches[_batch].to(self.device)
                 train_labels_batches[_batch] = train_labels_batches[_batch].to(self.device)
-            for _batch in range(len(test_data_batches)):
-                test_data_batches[_batch] = test_data_batches[_batch].to(self.device)
-                test_labels_batches[_batch] = test_labels_batches[_batch].to(self.device)
-        return _train_accuracies, _train_losses, _test_accuracies, _test_losses
-
+            for _batch in range(len(validation_data_batches)):
+                validation_data_batches[_batch] = validation_data_batches[_batch].to(self.device)
+                validation_labels_batches[_batch] = validation_labels_batches[_batch].to(self.device)
+        return _train_accuracies, _train_losses, _validation_accuracies, _validation_losses

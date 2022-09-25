@@ -5,9 +5,10 @@ from myDataSet import *
 from myNetworks import *
 
 
-def test_model(trained_model: NeuralNet | NeuralNet2,
+def test_model(trained_model,
                data: DataPrep,
-               nr_batches: int) -> None:
+               nr_batches: int = 0,
+               verbose: bool = False) -> None:
     """
     Void type function that tests a trained model on 'nr_batches' randomly
     selected batches by comparing model prediction with actual label.
@@ -16,33 +17,43 @@ def test_model(trained_model: NeuralNet | NeuralNet2,
     - trained_model: the trained Neural Net.
     - data: that data to test model on.
     - nr_batches: the nr. of batches to test on.
+    - verbose: boolean determining whether to print progress.
 
     """
 
-    # Generating random indices
-    rand_indices = []
-    while len(rand_indices) < nr_batches:
-        _rand_int = torch.randint(low=0, high=len(data.Y), size=(1,)).item()
-        if _rand_int not in rand_indices:
-            rand_indices.append(_rand_int)
+    assert nr_batches <= len(data.test_Y), f'Requested nr. batches is larger than nr. batches available in data.'
+
+    # Defaulting to all batches
+    if nr_batches == 0:
+        print("Testing model on all available test batches..")
+        rand_indices = [i for i in range(len(data.test_Y))]
+    else:
+        # Generating random indices
+        rand_indices = []
+        while len(rand_indices) < nr_batches:
+            _rand_int = torch.randint(low=0, high=len(data.test_Y), size=(1,)).item()
+            if _rand_int not in rand_indices:
+                rand_indices.append(_rand_int)
+
     # Predicting w. model and checking against true labels
     batch_counter = 0
     correct_counter = 0
     with torch.no_grad():
         for _index in rand_indices:
-            mod = trained_model.forward(data.X[_index])
-            y_hat = trained_model.predict(mod)
-            y_real = data.Y[_index]
-            print("\n ---  Random Batch: ", batch_counter + 1, " ---")
+            y_hat_raw = trained_model.forward(data.test_X[_index])
+            y_hat = trained_model.predict(y_hat_raw)
+            y_real = data.test_Y[_index]
+            if verbose:
+                print("\n ---  Random Batch: ", batch_counter + 1, " ---")
             for _data_point in range(y_hat.shape[0]):
                 pred = list(data.label_dict.keys())[torch.where(y_hat[_data_point] == 1)[0]]
                 actual = list(data.label_dict.keys())[torch.where(y_real[_data_point] == 1)[0]]
-                print("  ##| Prediction: ", pred, " |--| Actual: ", actual, " |##")
+                if verbose:
+                    print("  ##| Prediction: ", pred, " |--| Actual: ", actual, " |##")
                 if pred == actual:
                     correct_counter += 1
             batch_counter += 1
-    print("\n #####| ", correct_counter, "/", batch_counter * data.batch_size, " predicted correctly |#####")
-
+    print("\n #####| ", correct_counter, "/", batch_counter * data.batch_size, " items in ", len(rand_indices), " test batches predicted correctly ~ acc: ", round(correct_counter / (batch_counter * data.batch_size), 4), " |#####")
 
 def show_image_from_path(filepath: str) -> None:
     """
