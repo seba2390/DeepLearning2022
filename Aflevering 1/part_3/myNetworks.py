@@ -6,29 +6,79 @@ from tqdm import tqdm
 
 
 class NeuralNet(torch.nn.Module):
-    """ Inspired by https://learn.microsoft.com/en-us/windows/ai/windows-ml/tutorials/pytorch-train-model """
-
+    # see https://www.deeplearning.ai/ai-notes/initialization/index.html for weight initialization
     def __init__(self,
                  nr_classes: int,
-                 nr_features: int) -> None:
+                 nr_features: int,
+                 seed: int = 0) -> None:
         super(NeuralNet, self).__init__()
+
+        # Setting torch seed for reproducibility
+        torch.manual_seed(0)
+
         self.nr_features = nr_features
         self.nr_classes = nr_classes
         self.device = None
 
         # layer 1: linear layer
         self.lin1 = torch.nn.Linear(in_features=self.nr_features,
-                                    out_features=40)
+                                    out_features=40,
+                                    bias=True)
         self.activation1 = torch.nn.ReLU()
 
         # layer 2: linear layer
         self.lin2 = torch.nn.Linear(in_features=self.lin1.out_features,
-                                    out_features=60)
+                                    out_features=60,
+                                    bias=True)
         self.activation2 = torch.nn.ReLU()
 
         # layer 3: linear layer
         self.lin3 = torch.nn.Linear(in_features=self.lin2.out_features,
-                                    out_features=self.nr_classes)
+                                    out_features=self.nr_classes,
+                                    bias=True)
+
+        # Recursively initializing weights of linear layers in specific manner
+        self.apply(self.init_weights)
+
+    @staticmethod
+    def init_weights(module: torch.nn.modules,
+                     mode: str = "kaiming_uniform") -> None:
+        """
+        Void type static function for initializing
+        weights and biases of linear layers in network in
+        chosen manner.
+
+         Parameters:
+        - module: torch.nn.modules
+        - mode: string representation of chosen initialization mode.
+        """
+        if isinstance(module, torch.nn.Linear):
+
+            if mode == "xavier_uniform":
+                """ Understanding the difficulty of training deep 
+                    feedforward neural networks - Glorot, X. & Bengio, Y. (2010) """
+                torch.nn.init.xavier_uniform_(module.weight, gain=torch.nn.init.calculate_gain('relu'))
+                if module.bias is not None:
+                    torch.nn.init.xavier_uniform_(module.bias, gain=torch.nn.init.calculate_gain('relu'))
+            if mode == "xavier_normal":
+                """ Understanding the difficulty of training deep 
+                    feedforward neural networks - Glorot, X. & Bengio, Y. (2010) """
+                torch.nn.init.xavier_normal_(module.weight, gain=torch.nn.init.calculate_gain('relu'))
+                if module.bias is not None:
+                    torch.nn.init.xavier_normal_(module.bias, gain=torch.nn.init.calculate_gain('relu'))
+            if mode == "kaiming_uniform":
+                """ Delving deep into rectifiers: Surpassing
+                    human-level performance on ImageNet classification - He, K. et al. (2015) """
+                torch.nn.init.kaiming_uniform_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    torch.nn.init.kaiming_uniform_(module.weight, mode='fan_out', nonlinearity='relu')
+            if mode == "kaiming_normal":
+                """ Delving deep into rectifiers: Surpassing
+                    human-level performance on ImageNet classification - He, K. et al. (2015) """
+                torch.nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    torch.nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+
 
     def forward(self, data: torch.Tensor) -> torch.Tensor:
         """
@@ -164,6 +214,13 @@ class NeuralNet(torch.nn.Module):
                                       lr=0.001,
                                       weight_decay=0.0001)
 
+        # _optimizer = torch.optim.Adagrad(params=self.parameters(),
+        #                                 lr=0.01)
+
+        # _optimizer = torch.optim.SGD(params=self.parameters(),
+        #                             lr=0.01,
+        #                             momentum=0.9)
+
         _loss_function = torch.nn.CrossEntropyLoss()
 
         _train_accuracies, _train_losses = [], []
@@ -277,7 +334,6 @@ class NeuralNet(torch.nn.Module):
 
         # Saving model on last iteration
         torch.save(obj=self.state_dict(), f="Model/final_epoch.pt")
-
 
         # Removing from GPU and Allocating input on CPU
         if self.device.type != "cpu":
