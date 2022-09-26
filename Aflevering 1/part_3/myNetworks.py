@@ -18,12 +18,12 @@ class NeuralNet(torch.nn.Module):
 
         # layer 1: linear layer
         self.lin1 = torch.nn.Linear(in_features=self.nr_features,
-                                    out_features=10)
+                                    out_features=40)
         self.activation1 = torch.nn.ReLU()
 
         # layer 2: linear layer
         self.lin2 = torch.nn.Linear(in_features=self.lin1.out_features,
-                                    out_features=15)
+                                    out_features=60)
         self.activation2 = torch.nn.ReLU()
 
         # layer 3: linear layer
@@ -107,6 +107,7 @@ class NeuralNet(torch.nn.Module):
 
     def train_network(self, train_dataloader, validation_dataloader,
                       epochs: int = 10,
+                      no_improvement_max: int = 10,
                       device_name: str = "cuda") -> tuple[list[float], list[float], list[float], list[float]]:
 
         """
@@ -160,14 +161,15 @@ class NeuralNet(torch.nn.Module):
             labels = labels.to(self.device)
 
         _optimizer = torch.optim.Adam(params=self.parameters(),
-                                      lr=0.0025,
+                                      lr=0.001,
                                       weight_decay=0.0001)
 
         _loss_function = torch.nn.CrossEntropyLoss()
 
         _train_accuracies, _train_losses = [], []
         _validation_accuracies, _validation_losses = [], []
-        _best_validation_accuracy = 0.0
+        _best_validation_accuracy, _best_epoch = 0.0, 0
+        _no_improvement_counter = 0
 
         # Initial training loss and acc
         _counter = 0
@@ -260,10 +262,22 @@ class NeuralNet(torch.nn.Module):
             # Saving instance of model that yields the highest validation acc during training
             if _batch_validation_acc / _counter > _best_validation_accuracy:
                 _best_validation_accuracy = _batch_validation_acc / _counter
-                torch.save(obj=self.state_dict(), f="Model/model.pt")
-                #if epochs % 7 == 0:
-                #    print("Model saved at epoch: ", epoch + 1, ", with validation acc: ",
-                #          _best_validation_accuracy.item() * 100.0, "%")
+                torch.save(obj=self.state_dict(), f="Model/best_val_acc.pt")
+                _best_epoch = epoch + 1
+                _no_improvement_counter = 0
+            else:
+                _no_improvement_counter += 1
+
+            if _no_improvement_counter >= 40:
+                print("Early stopping due to no validation acc. improvement in: ", 40, "epochs.")
+                break
+
+        print("Highest validation acc. model saved at epoch: ", _best_epoch, ", with validation acc: ",
+              _best_validation_accuracy.item() * 100.0, "%")
+
+        # Saving model on last iteration
+        torch.save(obj=self.state_dict(), f="Model/final_epoch.pt")
+
 
         # Removing from GPU and Allocating input on CPU
         if self.device.type != "cpu":
