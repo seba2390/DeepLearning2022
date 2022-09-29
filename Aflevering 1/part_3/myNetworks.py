@@ -310,7 +310,7 @@ class NeuralNet(torch.nn.Module):
             if _batch_validation_acc > self._best_validation_accuracy:
                 self._best_validation_accuracy = _batch_validation_acc
                 torch.save(obj=self.state_dict(), f="Model/best_val_acc.pt")
-                _best_epoch = epoch + 1
+                self._best_epoch = epoch + 1
                 self._no_improvement_counter = 0
             else:
                 self._no_improvement_counter += 1
