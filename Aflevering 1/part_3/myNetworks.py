@@ -20,19 +20,24 @@ class NeuralNet(torch.nn.Module):
         self.nr_classes = nr_classes
         self.device = None
 
-        # layer 1: linear layer
+        self._train_accuracies, self._train_losses = [], []
+        self._validation_accuracies, self._validation_losses = [], []
+        self._best_validation_accuracy, self._best_epoch = 0.0, 0
+        self._no_improvement_counter = 0
+
+        # layer 1: linear input layer
         self.lin1 = torch.nn.Linear(in_features=self.nr_features,
                                     out_features=40,
                                     bias=True)
         self.activation1 = torch.nn.ReLU()
 
-        # layer 2: linear layer
+        # layer 2: linear hidden layer
         self.lin2 = torch.nn.Linear(in_features=self.lin1.out_features,
                                     out_features=60,
                                     bias=True)
         self.activation2 = torch.nn.ReLU()
 
-        # layer 3: linear layer
+        # layer 3: linear output layer
         self.lin3 = torch.nn.Linear(in_features=self.lin2.out_features,
                                     out_features=self.nr_classes,
                                     bias=True)
@@ -79,31 +84,32 @@ class NeuralNet(torch.nn.Module):
                 if module.bias is not None:
                     torch.nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
 
-
     def forward(self, data: torch.Tensor) -> torch.Tensor:
         """
         Function performing the forward pass on 'data', i.e. sequentially
-        applying each layer in the network.
+        applying each linear layer in the fully connected feed forward network.
 
+        Each linear layer acts as:
+        out = activation((W*X^T+1*b.T)^T),  where 1*b.T is an outer product
+        between a vector of ones and the vector of biases.
+        ------------------------------------------------------------------
          Parameters:
-        - data: 4D torch tensor of shape (nr. data points, nr. channels, height, width).
+        - data: 2D torch tensor of shape (nr. data points, nr. features).
 
          Returns:
-        - data: 4D torch tensor of shape (nr. data points, nr. channels, height, width).
+        - data: 2D torch tensor of shape (nr. data points, nr. classes).
 
         """
-
-        # Layer 1
+        # Input layer
         data = self.lin1(data)
         data = self.activation1(data)
 
-        # Layer 2
+        # Hidden layer
         data = self.lin2(data)
         data = self.activation2(data)
 
-        # layer 3
+        # Output layer
         data = self.lin3(data)
-
         return data
 
     def accuracy(self, y_hat: torch.Tensor,
@@ -150,27 +156,87 @@ class NeuralNet(torch.nn.Module):
             _row[_row == torch.max(_row)] = 1
             _row[_row != 1] = 0
             _row.to(self.device)
-        assert forwarded_data.device.type == self.device.type, f'_prediction is on device: {forwarded_data.device.type}, but should be on: {self.device.type}'
-        assert torch.all((forwarded_data == 0) | (
-                forwarded_data == 1)), f'forwarded_data should be one-hot encoded (only 1 and 0), but is: {forwarded_data}.'
+
         return forwarded_data
 
-    def train_network(self, train_dataloader, validation_dataloader,
-                      epochs: int = 10,
-                      no_improvement_max: int = 10,
-                      device_name: str = "cuda") -> tuple[list[float], list[float], list[float], list[float]]:
-
+    def save_acc_loss(self,
+                      train_dataloader: torch.utils.data.dataloader.DataLoader,
+                      validation_dataloader: torch.utils.data.dataloader.DataLoader,
+                      loss_function):
         """
-        Function for training the network, e.i. learn the optimal weights for each
-        layer. Training is done using stochastic gradient descent, with Negative
-        Log-Likelihood (also known as Cross Entropy) as a loss function.
+        Function for saving the training and validation loss and accuracy, respectively, using the
+        network params. at call time.
 
          Parameters:
-        - train_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - train_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - validation_data_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
-        - validation_labels_batches: list of 4D torch tensors, each of shape (nr. data points, nr. channels, height, width)
+        - train_dataloader: torch dataloader with batched training data - each batch is 2D tensor of shape (nr. data points, nr. features).
+        - validation_dataloader: torch dataloader with batched validation data - each batch is 2D tensor of shape (nr. data points, nr. features).
+        - loss_function:
+
+         Returns:
+        - _batch_validation_acc: float in (0,1) representing the avg. network validation accuracy on validation batches.
+
+        """
+        # Training loss and acc
+        _counter = 0
+        _batch_train_acc, _batch_train_loss = 0.0, 0.0
+        for _, (x_batch, y_batch) in enumerate(train_dataloader):
+            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
+            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(x_batch)
+                # Loss calculation
+                _loss = loss_function(_y_hat, y_batch)
+                # Saving losses and accuracies
+                _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch)
+                _batch_train_loss += _loss.item()
+            _counter += 1
+        self._train_accuracies.append(_batch_train_acc / _counter)
+        self._train_losses.append(_batch_train_loss / _counter)
+
+        # Validation loss and acc
+        _counter = 0
+        _batch_validation_sum, _batch_validation_loss = 0.0, 0.0
+        for _, (x_batch, y_batch) in enumerate(validation_dataloader):
+            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
+            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
+            with torch.no_grad():
+                # Forward pass
+                _y_hat = self.forward(x_batch)
+                # Loss calculation
+                _loss = loss_function(_y_hat, y_batch)
+                # Saving losses and accuracies
+                _batch_validation_sum += self.accuracy(self.predict(_y_hat), y_batch)
+                _batch_validation_loss += _loss.item()
+            _counter += 1
+        self._validation_accuracies.append(_batch_validation_sum / _counter)
+        self._validation_losses.append(_batch_validation_loss / _counter)
+
+        _batch_validation_acc = _batch_validation_sum / _counter
+        return _batch_validation_acc
+
+    def train_network(self, train_dataloader: torch.utils.data.dataloader.DataLoader,
+                      validation_dataloader: torch.utils.data.dataloader.DataLoader,
+                      epochs: int = 10,
+                      no_improvement_max: int = 10,
+                      verbose: bool = True,
+                      device_name: str = "cuda") -> tuple[list[float], ...]:
+
+        """
+        Function for training the network, e.i. learn the optimal weights and biases for each
+        layer. Training is done using mini-batch gradient descent in combination with the ADAM
+        optimizer, with Negative Log-Likelihood (also known as Cross Entropy) as a loss function.
+
+        Furthermore, an instance of the network params., i.e. weights and biases, is saved at the
+        epoch w. the highest val. accuracy.
+
+         Parameters:
+        - train_dataloader: torch dataloader with batched training data - each batch is 2D tensor of shape (nr. data points, nr. features).
+        - validation_dataloader: torch dataloader with batched validation data - each batch is 2D tensor of shape (nr. data points, nr. features).
         - epochs: nr. of epochs (iteration) used to train.
+        - no_improvement_max: max nr. epochs with no improvement in val. acc. without early stopping.
+        - verbose: boolean repr. determining whether to print status or not.
+        - device_name: str. repr. of chosen hardware device for torch - typically cpu or cuda (gpu).
 
          Returns:
         - _train_accuracies: list of floats w. avg. accuracies of training data at given epoch.
@@ -210,63 +276,18 @@ class NeuralNet(torch.nn.Module):
             data = data.to(self.device)
             labels = labels.to(self.device)
 
+        # Defining optimizer and loss function
         _optimizer = torch.optim.Adam(params=self.parameters(),
                                       lr=0.001,
                                       weight_decay=0.0001)
-
-        # _optimizer = torch.optim.Adagrad(params=self.parameters(),
-        #                                 lr=0.01)
-
-        # _optimizer = torch.optim.SGD(params=self.parameters(),
-        #                             lr=0.01,
-        #                             momentum=0.9)
-
         _loss_function = torch.nn.CrossEntropyLoss()
 
-        _train_accuracies, _train_losses = [], []
-        _validation_accuracies, _validation_losses = [], []
-        _best_validation_accuracy, _best_epoch = 0.0, 0
-        _no_improvement_counter = 0
-
-        # Initial training loss and acc
-        _counter = 0
-        _batch_train_acc, _batch_train_loss = 0.0, 0.0
-        for _, (x_batch, y_batch) in enumerate(train_dataloader):
-            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
-            with torch.no_grad():
-                # Forward pass
-                _y_hat = self.forward(x_batch)
-                # Loss calculation
-                _loss = _loss_function(_y_hat, y_batch)
-                # Saving losses and accuracies
-                _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                _batch_train_loss += _loss.item()
-            _counter += 1
-        _train_accuracies.append(_batch_train_acc / _counter)
-        _train_losses.append(_batch_train_loss / _counter)
-
-        # Initial validation loss and acc
-        _counter = 0
-        _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
-        for _, (x_batch, y_batch) in enumerate(validation_dataloader):
-            assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-            assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
-            with torch.no_grad():
-                # Forward pass
-                _y_hat = self.forward(x_batch)
-                # Loss calculation
-                _loss = _loss_function(_y_hat, y_batch)
-                # Saving losses and accuracies
-                _batch_validation_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                _batch_validation_loss += _loss.item()
-            _counter += 1
-        _validation_accuracies.append(_batch_validation_acc / _counter)
-        _validation_losses.append(_batch_validation_loss / _counter)
-
-        # Actual training
-        for epoch in tqdm(range(epochs)):
-
+        # Saving initial model accuracy and loss
+        _batch_validation_acc = self.save_acc_loss(train_dataloader=train_dataloader,
+                                                   validation_dataloader=validation_dataloader,
+                                                   loss_function=_loss_function)
+        # Training model on training data
+        for epoch in tqdm(range(epochs), disable=(not verbose)):
             # Training against training data
             for _, (x_batch, y_batch) in enumerate(train_dataloader):
                 assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
@@ -280,69 +301,29 @@ class NeuralNet(torch.nn.Module):
                 _loss.backward()
                 _optimizer.step()
 
-            # Calculating and saving training data accuracy and loss
-            _counter = 0
-            _batch_train_acc, _batch_train_loss = 0.0, 0.0
-            for _, (x_batch, y_batch) in enumerate(train_dataloader):
-                assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-                assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
-                with torch.no_grad():
-                    # Forward pass
-                    _y_hat = self.forward(x_batch)
-                    # Loss calculation
-                    _loss = _loss_function(_y_hat, y_batch)
-                    # Saving losses and accuracies
-                    _batch_train_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                    _batch_train_loss += _loss.item()
-                _counter += 1
-            _train_accuracies.append(_batch_train_acc / _counter)
-            _train_losses.append(_batch_train_loss / _counter)
-
-            # Calculating and saving validation data accuracy and loss
-            _counter = 0
-            _batch_validation_acc, _batch_validation_loss = 0.0, 0.0
-            for _, (x_batch, y_batch) in enumerate(validation_dataloader):
-                assert x_batch.device.type == self.device.type, f'x_batch is on device: {x_batch.device.type}, but should be on: {self.device.type}'
-                assert y_batch.device.type == self.device.type, f'y_batch is on device: {y_batch.device.type}, but should be on: {self.device.type}'
-                with torch.no_grad():
-                    # Forward pass
-                    _y_hat = self.forward(x_batch)
-                    # Loss calculation
-                    _loss = _loss_function(_y_hat, y_batch)
-                    # Saving losses and accuracies
-                    _batch_validation_acc += self.accuracy(self.predict(_y_hat), y_batch)
-                    _batch_validation_loss += _loss.item()
-                _counter += 1
-            _validation_accuracies.append(_batch_validation_acc / _counter)
-            _validation_losses.append(_batch_validation_loss / _counter)
+            # Saving model accuracy and loss at current epoch
+            _batch_validation_acc = self.save_acc_loss(train_dataloader=train_dataloader,
+                                                       validation_dataloader=validation_dataloader,
+                                                       loss_function=_loss_function)
 
             # Saving instance of model that yields the highest validation acc during training
-            if _batch_validation_acc / _counter > _best_validation_accuracy:
-                _best_validation_accuracy = _batch_validation_acc / _counter
+            if _batch_validation_acc > self._best_validation_accuracy:
+                self._best_validation_accuracy = _batch_validation_acc
                 torch.save(obj=self.state_dict(), f="Model/best_val_acc.pt")
                 _best_epoch = epoch + 1
-                _no_improvement_counter = 0
+                self._no_improvement_counter = 0
             else:
-                _no_improvement_counter += 1
+                self._no_improvement_counter += 1
 
-            if _no_improvement_counter >= 40:
-                print("Early stopping due to no validation acc. improvement in: ", 40, "epochs.")
+            if self._no_improvement_counter >= no_improvement_max:
+                if verbose:
+                    print("Early stopping due to no validation acc. improvement in: ", 40, "epochs.")
                 break
-
-        print("Highest validation acc. model saved at epoch: ", _best_epoch, ", with validation acc: ",
-              _best_validation_accuracy.item() * 100.0, "%")
+        if verbose:
+            print("Highest validation acc. model saved at epoch: ", self._best_epoch, ", with validation acc: ",
+                  self._best_validation_accuracy * 100.0, "%")
 
         # Saving model on last iteration
         torch.save(obj=self.state_dict(), f="Model/final_epoch.pt")
 
-        # Removing from GPU and Allocating input on CPU
-        if self.device.type != "cpu":
-            self.device = torch.device('cpu')
-            self.to(self.device)
-            for _, (data, labels) in enumerate(train_dataloader):
-                data = data.to(self.device)
-                labels = labels.to(self.device)
-            for _, (data, labels) in enumerate(validation_dataloader):
-                data = data.to(self.device)
-                labels = labels.to(self.device)
-        return _train_accuracies, _train_losses, _validation_accuracies, _validation_losses
+        return self._train_accuracies, self._train_losses, self._validation_accuracies, self._validation_losses
